@@ -1,0 +1,17 @@
+[gd_scene load_steps=3 format=3]
+
+[ext_resource type="Script" path="res://scripts/planet.gd" id="1_planet"]
+[ext_resource type="Texture2D" path="res://assets/sprites/planet.png" id="2_planet_tex"]
+
+[sub_resource type="CircleShape2D" id="1_circle"]
+radius = 50.0
+
+[node name="Planet" type="Area2D"]
+script = ExtResource("1_planet")
+
+[node name="Sprite2D" type="Sprite2D" parent="."]
+scale = Vector2(0.1, 0.1)
+texture = ExtResource("2_planet_tex")
+
+[node name="CollisionShape2D" type="CollisionShape2D" parent="."]
+shape = SubResource("1_circle")
