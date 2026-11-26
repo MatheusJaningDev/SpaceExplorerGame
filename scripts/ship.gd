@@ -6,6 +6,13 @@ var acceleration = 1200
 var friction = 600
 var rotation_speed = 10.0
 
+# Progressão: upgrades a cada onda de 5 planetas e power-ups temporários
+var base_max_speed = 500
+var base_acceleration = 1200
+var upgrade_tier = 0
+var triple_shot_time_left = 0.0
+var speed_boost_time_left = 0.0
+
 # Sistema de escudos/vida
 var max_shield = 3
 var shield = 3
@@ -85,6 +92,11 @@ func _process(delta):
 		modulate.a = 1.0
 
 func _physics_process(delta):
+	if triple_shot_time_left > 0.0:
+		triple_shot_time_left -= delta
+	if speed_boost_time_left > 0.0:
+		speed_boost_time_left -= delta
+
 	# Controles WASD
 	var input_vector = Vector2.ZERO
 	input_vector.x = Input.get_action_strength("ui_right") - Input.get_action_strength("ui_left")
@@ -93,7 +105,9 @@ func _physics_process(delta):
 	
 	# Física de movimento com inércia
 	if input_vector != Vector2.ZERO:
-		velocity = velocity.move_toward(input_vector * max_speed, acceleration * delta)
+		var current_max_speed = max_speed * 1.5 if speed_boost_time_left > 0.0 else max_speed
+		var current_acceleration = acceleration * 1.3 if speed_boost_time_left > 0.0 else acceleration
+		velocity = velocity.move_toward(input_vector * current_max_speed, current_acceleration * delta)
 		var target_angle = input_vector.angle() + PI/2
 		rotation = lerp_angle(rotation, target_angle, rotation_speed * delta)
 		
@@ -142,14 +156,13 @@ func shoot():
 		return
 		
 	can_shoot = false
-	var bullet = bullet_scene.instantiate()
-	get_parent().add_child(bullet)
-	
-	# Bala sai da frente da nave
-	var direction = Vector2.UP.rotated(rotation)
-	bullet.global_position = global_position + direction * 45
-	bullet.set_direction(direction)
-	
+	if triple_shot_time_left > 0.0:
+		fire_bullet(0.0)
+		fire_bullet(16.0)
+		fire_bullet(-16.0)
+	else:
+		fire_bullet(0.0)
+
 	# Som do laser
 	laser_sound.play()
 	
@@ -158,6 +171,13 @@ func shoot():
 	
 	await get_tree().create_timer(shoot_cooldown).timeout
 	can_shoot = true
+
+func fire_bullet(angle_offset_deg: float):
+	var bullet = bullet_scene.instantiate()
+	get_parent().add_child(bullet)
+	var direction = Vector2.UP.rotated(rotation + deg_to_rad(angle_offset_deg))
+	bullet.global_position = global_position + direction * 45
+	bullet.set_direction(direction)
 
 func check_collisions():
 	for i in get_slide_collision_count():
@@ -208,6 +228,46 @@ func die():
 	var tween = create_tween()
 	tween.tween_property(self, "scale", Vector2.ZERO, 0.4)
 	tween.tween_callback(queue_free)
+
+func apply_power_up(power_type: String):
+	match power_type:
+		"shield":
+			shield = min(max_shield, shield + 1)
+			get_tree().call_group("main", "update_hud_shield", shield, max_shield)
+		"triple_shot":
+			triple_shot_time_left = 8.0
+		"speed":
+			speed_boost_time_left = 8.0
+	get_tree().call_group("main", "show_toast", power_up_label(power_type))
+
+func power_up_label(power_type: String) -> String:
+	match power_type:
+		"shield":
+			return "ESCUDO RESTAURADO"
+		"triple_shot":
+			return "TIRO TRIPLO ATIVADO"
+		"speed":
+			return "IMPULSO ATIVADO"
+	return ""
+
+func apply_upgrade(tier: int):
+	upgrade_tier = tier
+	max_speed = base_max_speed + tier * 60
+	acceleration = base_acceleration + tier * 150
+	max_shield += 1
+	shield = max_shield
+	shoot_cooldown = max(0.08, shoot_cooldown - 0.02)
+	get_tree().call_group("main", "update_hud_shield", shield, max_shield)
+
+	# "Novo formato" da nave: recoloração e crescimento progressivo a cada upgrade,
+	# já que não há sprites alternativos de nave nos assets do projeto
+	var palette = [Color(1.0, 1.0, 1.0), Color(0.5, 1.0, 0.6), Color(1.0, 0.85, 0.3), Color(1.0, 0.5, 0.9), Color(0.6, 0.8, 1.0)]
+	modulate = palette[tier % palette.size()]
+	var target_scale = Vector2.ONE * (1.0 + tier * 0.08)
+
+	var tween = create_tween()
+	tween.tween_property(self, "scale", target_scale * 1.35, 0.15)
+	tween.tween_property(self, "scale", target_scale, 0.25)
 
 func _draw():
 	if shield > 0 and shield_visible_timer > 0.0:

@@ -7,6 +7,7 @@ var health = 30
 var rotation_speed = 0.0
 var velocity = Vector2.ZERO
 var score_value = 10
+var speed_multiplier = 1.0
 
 func _ready():
 	add_to_group("asteroid")
@@ -31,7 +32,7 @@ func _ready():
 	if velocity == Vector2.ZERO:
 		var angle = randf() * TAU
 		var speed = randf_range(80, 140) if size == 3 else (randf_range(130, 200) if size == 2 else randf_range(200, 280))
-		velocity = Vector2(cos(angle), sin(angle)) * speed
+		velocity = Vector2(cos(angle), sin(angle)) * speed * speed_multiplier
 	
 	# Conectar sinais de colisão
 	area_entered.connect(_on_area_entered)
@@ -157,7 +158,17 @@ func explode():
 			
 			get_parent().call_deferred("add_child", new_ast)
 			
+	if randf() < 0.18:
+		spawn_powerup()
+
 	queue_free()
+
+func spawn_powerup():
+	var p = load("res://scenes/powerup.tscn").instantiate()
+	p.global_position = global_position
+	var types = ["shield", "triple_shot", "speed"]
+	p.power_type = types[randi() % types.size()]
+	get_parent().call_deferred("add_child", p)
 
 func spawn_explosion_particles():
 	var parent = get_parent()

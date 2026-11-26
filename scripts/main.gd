@@ -4,6 +4,7 @@ extends Node2D
 
 # Cenas e assets
 var asteroid_scene = preload("res://scenes/asteroid.tscn")
+var enemy_ship_scene = preload("res://scenes/enemy_ship.tscn")
 var planet_scene = preload("res://scenes/planet.tscn")
 var planet_large_1 = load("res://assets/sprites/planet_large_1.png")
 var planet_large_2 = load("res://assets/sprites/planet_large_2.png")
@@ -14,14 +15,27 @@ var game_state = State.MENU
 
 # Static para persistir decisão de skip ao reiniciar
 static var skip_menu_next_load = false
+static var restart_stage = 1
 
 # Dados de jogo
 var score = 0
 var asteroids_destroyed = 0
+var enemies_destroyed = 0
 var planets_discovered = 0
 var total_planets = 5
+var wave = 1
+var upgrade_tier = 0
+var asteroid_speed_multiplier = 1.0
+var highscore = 0
+var current_stage = 1
+var unlocked_stage = 1
+var portal_spawned = false
+const SAVE_PATH = "user://highscore.save"
 var spawn_timer = 0.0
 var spawn_interval = 1.3  # Spawn ligeiramente mais dinâmico
+var enemy_spawn_timer = 0.0
+var enemy_spawn_interval = 15.0  # Pressão leve: naves hostis raras
+var max_enemy_ships = 2
 
 # Câmera e screenshake
 var camera: Camera2D
@@ -49,6 +63,8 @@ var hud_target_coord_label: Label
 var hud_target_dist_label: Label
 var hud_target_bearing_label: Label
 var hud_planets_list_label: Label
+var hud_wave_label: Label
+var hud_highscore_label: Label
 
 # Reprodutores de Áudio
 @onready var sfx_explosion = AudioStreamPlayer.new()
@@ -63,6 +79,8 @@ func _ready():
 	# Configurar modo de processamento (permite que Main rode mesmo pausado)
 	process_mode = Node.PROCESS_MODE_ALWAYS
 	
+	load_progress()
+
 	# Setup de áudio local
 	setup_audio()
 	
@@ -83,7 +101,7 @@ func _ready():
 	# Controle do fluxo inicial (Menu ou Gameplay Direto no Restart)
 	if skip_menu_next_load:
 		skip_menu_next_load = false
-		start_game()
+		start_game(restart_stage)
 	else:
 		enter_menu_state()
 
@@ -177,18 +195,41 @@ func setup_ui():
 	subtitle.add_theme_color_override("font_color", Color(0.5, 0.5, 0.7, 0.8))
 	subtitle.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	menu_vbox.add_child(subtitle)
+
+	hud_highscore_label = Label.new()
+	hud_highscore_label.text = "RECORDE: %d" % highscore
+	hud_highscore_label.add_theme_font_size_override("font_size", 13)
+	hud_highscore_label.add_theme_color_override("font_color", Color(1.0, 0.8, 0.2))
+	hud_highscore_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	menu_vbox.add_child(hud_highscore_label)
 	
 	var spacer = Control.new()
 	spacer.custom_minimum_size = Vector2(0, 15)
 	menu_vbox.add_child(spacer)
 	
 	var play_btn = Button.new()
-	play_btn.text = "INICIAR JOGO"
+	play_btn.text = "INICIAR ETAPA 1"
 	play_btn.custom_minimum_size = Vector2(260, 50)
 	play_btn.add_theme_font_size_override("font_size", 18)
 	play_btn.add_theme_color_override("font_color", Color(0.0, 1.0, 0.5))
-	play_btn.pressed.connect(start_game)
+	play_btn.pressed.connect(start_game.bind(1))
 	menu_vbox.add_child(play_btn)
+
+	if unlocked_stage >= 2:
+		var play_btn2 = Button.new()
+		play_btn2.text = "INICIAR ETAPA 2"
+		play_btn2.custom_minimum_size = Vector2(260, 50)
+		play_btn2.add_theme_font_size_override("font_size", 18)
+		play_btn2.add_theme_color_override("font_color", Color(1.0, 0.6, 0.2))
+		play_btn2.pressed.connect(start_game.bind(2))
+		menu_vbox.add_child(play_btn2)
+	else:
+		var locked_lbl = Label.new()
+		locked_lbl.text = "ETAPA 2 BLOQUEADA\nDestrua 5 naves hostis e cruze o portal para desbloquear"
+		locked_lbl.add_theme_font_size_override("font_size", 11)
+		locked_lbl.add_theme_color_override("font_color", Color(0.5, 0.5, 0.6))
+		locked_lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		menu_vbox.add_child(locked_lbl)
 	
 	var tutorial_menu_btn = Button.new()
 	tutorial_menu_btn.text = "COMO JOGAR"
@@ -290,6 +331,12 @@ func setup_ui():
 	hud_planets_list_label.add_theme_font_size_override("font_size", 9)
 	hud_planets_list_label.add_theme_color_override("font_color", Color(0.65, 0.85, 1.0, 0.8))
 	stats_vbox.add_child(hud_planets_list_label)
+
+	hud_wave_label = Label.new()
+	hud_wave_label.text = "ONDA: 1"
+	hud_wave_label.add_theme_font_size_override("font_size", 12)
+	hud_wave_label.add_theme_color_override("font_color", Color(1.0, 0.6, 1.0))
+	stats_vbox.add_child(hud_wave_label)
 	
 	# Margem inferior para coordenadas
 	var margin_bottom = MarginContainer.new()
@@ -611,6 +658,12 @@ func _process(delta):
 					min_dist = d
 					nearest_planet = p
 					
+		var target_is_portal = false
+		var portals = get_tree().get_nodes_in_group("portal")
+		if portals.size() > 0 and is_instance_valid(portals[0]):
+			nearest_planet = portals[0]
+			target_is_portal = true
+
 		if nearest_planet:
 			var target_pos = nearest_planet.global_position
 			var ship_pos = ship.global_position
@@ -619,7 +672,10 @@ func _process(delta):
 			# Determinar o índice dele no cenário
 			var target_idx = planets.find(nearest_planet) + 1
 			if hud_target_name_label:
-				hud_target_name_label.text = "ALVO: PLANETA #%d" % target_idx
+				if target_is_portal:
+					hud_target_name_label.text = "ALVO: PORTAL"
+				else:
+					hud_target_name_label.text = "ALVO: PLANETA #%d" % target_idx
 			if hud_target_coord_label:
 				hud_target_coord_label.text = "COORD: (%.0f, %.0f)" % [target_pos.x, target_pos.y]
 			if hud_target_dist_label:
@@ -693,6 +749,12 @@ func _process(delta):
 			spawn_asteroid_near_player()
 			spawn_timer = 0.0
 
+		# Spawner de naves hostis (pressão leve e ocasional)
+		enemy_spawn_timer += delta
+		if enemy_spawn_timer >= enemy_spawn_interval:
+			enemy_spawn_timer = 0.0
+			spawn_enemy_ship()
+
 func _input(event):
 	if tutorial_container and tutorial_container.visible and event.is_action_pressed("ui_cancel"):
 		close_tutorial()
@@ -717,16 +779,34 @@ func enter_menu_state():
 		ship.set_physics_process(false)
 		ship.set_process(false)
 
-func start_game():
+func start_game(stage: int = 1):
+	current_stage = stage
 	game_state = State.PLAYING
 	menu_container.visible = false
 	hud_container.visible = true
 	pause_container.visible = false
 	gameover_container.visible = false
-	
+
 	score = 0
 	asteroids_destroyed = 0
+	enemies_destroyed = 0
 	planets_discovered = 0
+	wave = 1
+	upgrade_tier = 0
+	portal_spawned = false
+
+	# Dificuldade base da etapa: Etapa 2 começa relativamente parecida, porém mais exigente
+	if stage >= 2:
+		spawn_interval = 1.1
+		asteroid_speed_multiplier = 1.15
+		enemy_spawn_interval = 12.0
+		max_enemy_ships = 3
+	else:
+		spawn_interval = 1.3
+		asteroid_speed_multiplier = 1.0
+		enemy_spawn_interval = 15.0
+		max_enemy_ships = 2
+
 	update_hud_labels()
 	
 	if ship and is_instance_valid(ship):
@@ -756,6 +836,7 @@ func toggle_pause():
 
 func restart_game():
 	skip_menu_next_load = true
+	restart_stage = current_stage
 	get_tree().paused = false
 	get_tree().reload_current_scene()
 
@@ -766,12 +847,73 @@ func return_to_menu():
 
 func update_hud_labels():
 	hud_score_label.text = "SCORE: %d" % score
-	hud_planets_label.text = "EXPLORAÇÃO: %d / %d" % [planets_discovered, total_planets]
+	var wave_progress = planets_discovered % total_planets
+	if wave_progress == 0 and planets_discovered > 0:
+		wave_progress = total_planets
+	hud_planets_label.text = "EXPLORAÇÃO: %d / %d" % [wave_progress, total_planets]
+	if hud_wave_label:
+		hud_wave_label.text = "ONDA: %d" % wave
 
 func update_hud_shield(current: int, max_val: int):
 	if hud_shield_bar:
 		hud_shield_bar.max_value = max_val
 		hud_shield_bar.value = current
+
+func load_progress():
+	if FileAccess.file_exists(SAVE_PATH):
+		var f = FileAccess.open(SAVE_PATH, FileAccess.READ)
+		if f:
+			highscore = f.get_32()
+			if not f.eof_reached():
+				unlocked_stage = max(1, f.get_32())
+			f.close()
+
+func save_progress():
+	if score > highscore:
+		highscore = score
+	var f = FileAccess.open(SAVE_PATH, FileAccess.WRITE)
+	if f:
+		f.store_32(highscore)
+		f.store_32(unlocked_stage)
+		f.close()
+
+func show_toast(text: String):
+	if not hud_container:
+		return
+	var toast = Label.new()
+	toast.text = text
+	toast.add_theme_font_size_override("font_size", 20)
+	toast.add_theme_color_override("font_color", Color(0.3, 1.0, 0.8))
+	toast.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	toast.set_anchors_and_offsets_preset(Control.PRESET_CENTER_TOP)
+	toast.position.y = 90
+	hud_container.add_child(toast)
+
+	var tween = create_tween()
+	tween.tween_interval(1.6)
+	tween.tween_property(toast, "modulate:a", 0.0, 0.6)
+	tween.tween_callback(toast.queue_free)
+
+func on_powerup_collected():
+	sfx_collect.play()
+	shake_camera(5.0, 0.15)
+
+func trigger_wave_upgrade():
+	wave += 1
+	upgrade_tier += 1
+
+	spawn_more_planets()
+
+	spawn_interval = max(0.45, spawn_interval - 0.12)
+	asteroid_speed_multiplier = min(2.2, asteroid_speed_multiplier + 0.15)
+	enemy_spawn_interval = max(8.0, enemy_spawn_interval - 1.0)
+	max_enemy_ships = min(4, 2 + upgrade_tier / 2)
+
+	if ship and is_instance_valid(ship):
+		ship.apply_upgrade(upgrade_tier)
+
+	update_hud_labels()
+	show_toast("ONDA %d - NAVE APRIMORADA!" % wave)
 
 func shake_camera(intensity: float, duration: float):
 	shake_intensity = intensity
@@ -798,6 +940,25 @@ func spawn_initial_planets():
 		planet.z_index = -2
 		add_child(planet)
 
+func spawn_more_planets():
+	var center = ship.global_position if ship and is_instance_valid(ship) else Vector2.ZERO
+	var min_d = 500.0 + float(wave) * 150.0
+	var max_d = 1400.0 + float(wave) * 250.0
+
+	for i in range(total_planets):
+		var planet = planet_scene.instantiate()
+		var angle = randf() * TAU
+		var distance = randf_range(min_d, max_d)
+		planet.global_position = center + Vector2(cos(angle), sin(angle)) * distance
+
+		var sprite = planet.get_node("Sprite2D")
+		if sprite:
+			sprite.texture = planet_large_1 if i % 2 == 0 else planet_large_2
+
+		planet.scale = Vector2(0.8, 0.8)
+		planet.z_index = -2
+		add_child(planet)
+
 func spawn_asteroid_near_player():
 	if not ship or not is_instance_valid(ship) or game_state != State.PLAYING:
 		return
@@ -807,7 +968,22 @@ func spawn_asteroid_near_player():
 	var distance = 850.0  # Ligeiramente fora da tela 1280x720
 	asteroid.global_position = ship.global_position + Vector2(cos(angle), sin(angle)) * distance
 	asteroid.size = 0  # Faz randomizar o tamanho internamente
+	asteroid.speed_multiplier = asteroid_speed_multiplier
 	add_child(asteroid)
+
+func spawn_enemy_ship():
+	if not ship or not is_instance_valid(ship):
+		return
+
+	var current_enemies = get_tree().get_nodes_in_group("enemy_ship").size()
+	if current_enemies >= max_enemy_ships:
+		return
+
+	var enemy = enemy_ship_scene.instantiate()
+	var angle = randf() * TAU
+	var distance = 900.0
+	enemy.global_position = ship.global_position + Vector2(cos(angle), sin(angle)) * distance
+	add_child(enemy)
 
 func on_asteroid_destroyed(_pos: Vector2, value: int):
 	asteroids_destroyed += 1
@@ -817,6 +993,41 @@ func on_asteroid_destroyed(_pos: Vector2, value: int):
 	# Áudio e Screenshake
 	sfx_explosion.play()
 	shake_camera(8.0, 0.2)
+
+func on_enemy_destroyed(_pos: Vector2, value: int):
+	enemies_destroyed += 1
+	score += value
+	update_hud_labels()
+
+	sfx_explosion.play()
+	shake_camera(10.0, 0.25)
+
+	if enemies_destroyed >= 5 and not portal_spawned:
+		spawn_portal()
+
+func spawn_portal():
+	portal_spawned = true
+	if not ship or not is_instance_valid(ship):
+		return
+
+	var portal = load("res://scenes/portal.tscn").instantiate()
+	var angle = randf() * TAU
+	var distance = randf_range(900.0, 1500.0)
+	portal.global_position = ship.global_position + Vector2(cos(angle), sin(angle)) * distance
+	add_child(portal)
+	show_toast("PORTAL DETECTADO - SIGA AS COORDENADAS!")
+
+func on_portal_entered():
+	sfx_collect.play()
+	shake_camera(10.0, 0.4)
+	spawn_celebration_particles(ship.global_position)
+	await get_tree().create_timer(1.0).timeout
+	complete_stage()
+
+func complete_stage():
+	unlocked_stage = min(2, max(unlocked_stage, current_stage + 1))
+	save_progress()
+	show_game_over(true)
 
 func on_planet_discovered(pos: Vector2):
 	planets_discovered += 1
@@ -830,9 +1041,9 @@ func on_planet_discovered(pos: Vector2):
 	# Efeito de fogos neon orbitando
 	spawn_celebration_particles(pos)
 	
-	# Condição de Vitória
-	if planets_discovered >= total_planets:
-		trigger_victory()
+	# A cada onda completa (5 planetas), a nave recebe um upgrade
+	if planets_discovered % total_planets == 0:
+		trigger_wave_upgrade()
 
 func spawn_celebration_particles(pos: Vector2):
 	var p = CPUParticles2D.new()
@@ -873,15 +1084,23 @@ func show_game_over(victory: bool):
 	game_state = State.GAMEOVER
 	hud_container.visible = false
 	gameover_container.visible = true
-	
+
+	var is_new_record = score > highscore
+	save_progress()
+	var record_text = "NOVO RECORDE!" if is_new_record else ("Recorde: %d" % highscore)
+
 	if victory:
-		game_over_title.text = "MISSÃO CUMPRIDA"
 		game_over_title.add_theme_color_override("font_color", Color(0.2, 1.0, 0.5)) # Verde
-		stats_detail_label.text = "PARABÉNS! Você explorou todos os planetas!\n\nScore Final: %d\nAsteroides Destruídos: %d" % [score, asteroids_destroyed]
+		if current_stage >= 2:
+			game_over_title.text = "ETAPA 2 CONCLUÍDA"
+			stats_detail_label.text = "Você cruzou o portal final e venceu as etapas disponíveis!\n\nScore Final: %d (%s)\nOnda Alcançada: %d\nPlanetas Explorados: %d\nNaves Inimigas Destruídas: %d" % [score, record_text, wave, planets_discovered, enemies_destroyed]
+		else:
+			game_over_title.text = "ETAPA %d CONCLUÍDA" % current_stage
+			stats_detail_label.text = "Portal cruzado com sucesso! Nova etapa desbloqueada.\n\nScore Final: %d (%s)\nOnda Alcançada: %d\nPlanetas Explorados: %d\nNaves Inimigas Destruídas: %d" % [score, record_text, wave, planets_discovered, enemies_destroyed]
 	else:
 		game_over_title.text = "MISSÃO COMPROMETIDA"
 		game_over_title.add_theme_color_override("font_color", Color(1.0, 0.25, 0.25)) # Vermelho
-		stats_detail_label.text = "Sua nave foi desintegrada nos confins do espaço.\n\nScore Final: %d\nPlanetas Explorados: %d / %d\nAsteroides Destruídos: %d" % [score, planets_discovered, total_planets, asteroids_destroyed]
+		stats_detail_label.text = "Sua nave foi desintegrada nos confins do espaço.\n\nScore Final: %d (%s)\nOnda Alcançada: %d\nPlanetas Explorados: %d\nAsteroides Destruídos: %d\nNaves Inimigas Destruídas: %d" % [score, record_text, wave, planets_discovered, asteroids_destroyed, enemies_destroyed]
 
 func trigger_victory():
 	show_game_over(true)
