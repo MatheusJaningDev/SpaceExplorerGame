@@ -29,10 +29,8 @@ Este é um protótipo funcional expandido e visualmente aprimorado desenvolvido 
 
 | Ação | Controle |
 |------|----------|
-| Inserir Coordenada X | Campo de texto "X" |
-| Inserir Coordenada Y | Campo de texto "Y" |
-| Navegar | Botão "Navegar" ou clique do rato |
-| Disparar | Botão "Disparar" |
+| Navegar | Setas teclado |
+| Disparar | Botão "espaço" |
 
 ## 🌟 Mecânicas de Jogo
 
