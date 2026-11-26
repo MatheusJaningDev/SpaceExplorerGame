@@ -1,0 +1,17 @@
+[gd_scene load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://scripts/enemy_bullet.gd" id="1_enemy_bullet"]
+
+[node name="EnemyBullet" type="Area2D"]
+script = ExtResource("1_enemy_bullet")
+
+[node name="Sprite2D" type="Sprite2D" parent="."]
+scale = Vector2(0.5, 0.5)
+self_modulate = Color(1, 0.3, 0.2, 1)
+
+[node name="ColorRect" type="ColorRect" parent="Sprite2D"]
+offset_left = -5.0
+offset_top = -5.0
+offset_right = 5.0
+offset_bottom = 5.0
+color = Color(1, 0.3, 0.2, 1)
